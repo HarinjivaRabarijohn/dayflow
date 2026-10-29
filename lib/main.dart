@@ -222,11 +222,30 @@ class GroceryItem {
 }
 
 class MonthlyItem {
-  MonthlyItem(this.name, this.category, this.daysUntilDue);
+  MonthlyItem(this.name, this.category, this.daysUntilDue,
+      {this.quantity = 1, this.price = 0});
 
-  final String name;
-  final String category;
-  final int daysUntilDue;
+  String name;
+  String category;
+  int daysUntilDue;
+  double quantity;
+  double price;
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'category': category,
+        'daysUntilDue': daysUntilDue,
+        'quantity': quantity,
+        'price': price,
+      };
+
+  factory MonthlyItem.fromJson(Map<String, dynamic> json) => MonthlyItem(
+        json['name'] as String? ?? 'Purchase',
+        json['category'] as String? ?? 'Other',
+        (json['daysUntilDue'] as num?)?.toInt() ?? 30,
+        quantity: (json['quantity'] as num?)?.toDouble() ?? 1,
+        price: (json['price'] as num?)?.toDouble() ?? 0,
+      );
 }
 
 class ChallengeItem {
@@ -274,6 +293,33 @@ class ChallengeItem {
 }
 
 DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
+
+String _dayLabel(DateTime date) {
+  const weekdays = [
+    'MONDAY',
+    'TUESDAY',
+    'WEDNESDAY',
+    'THURSDAY',
+    'FRIDAY',
+    'SATURDAY',
+    'SUNDAY',
+  ];
+  const months = [
+    'JANUARY',
+    'FEBRUARY',
+    'MARCH',
+    'APRIL',
+    'MAY',
+    'JUNE',
+    'JULY',
+    'AUGUST',
+    'SEPTEMBER',
+    'OCTOBER',
+    'NOVEMBER',
+    'DECEMBER',
+  ];
+  return '${weekdays[date.weekday - 1]}, ${months[date.month - 1]} ${date.day}';
+}
 
 class WorkoutLog {
   WorkoutLog(this.title, this.date);
@@ -465,21 +511,59 @@ class _AppShellState extends State<AppShell> {
   final ProfileData _profile = ProfileData();
   final List<PlannerDeadline> _deadlines = [];
   final List<TimetableEntry> _timetable = [];
+  int _movementSteps = 0;
 
   @override
   void initState() {
     super.initState();
     _loadTasks();
     _loadGroceries();
+    _loadMonthlyItems();
     _loadProfile();
     _loadPlanner();
     _loadChallenges();
+    _loadDailyMovement();
   }
 
   int get _completedTasks => _tasks.where((task) => task.done).length;
   ChallengeItem get _selectedChallenge => _challenges[_selectedChallengeIndex];
   int get _completedChallengeDays =>
       _selectedChallenge.days.where((completed) => completed).length;
+
+  Future<void> _loadDailyMovement() async {
+    final preferences = await SharedPreferences.getInstance();
+    final today = _dateOnly(DateTime.now());
+    final storedDate = preferences.getString('movement_date') ?? '';
+    if (storedDate == today.toIso8601String()) {
+      if (mounted) {
+        setState(() {
+          _movementSteps = preferences.getInt('movement_steps') ?? 0;
+        });
+      }
+    } else {
+      await preferences.setString('movement_date', today.toIso8601String());
+      await preferences.setInt('movement_steps', 0);
+    }
+  }
+
+  Future<void> _editMovement() async {
+    final controller = TextEditingController(text: '$_movementSteps');
+    final result = await showDialog<int>(
+      context: context,
+      builder: (context) => _NumberInputDialog(
+        title: 'Log today\'s movement',
+        label: 'Steps completed today',
+        controller: controller,
+      ),
+    );
+    controller.dispose();
+    if (result == null || !mounted) return;
+    final preferences = await SharedPreferences.getInstance();
+    setState(() => _movementSteps = result);
+    await preferences.setString(
+        'movement_date', _dateOnly(DateTime.now()).toIso8601String());
+    await preferences.setInt('movement_steps', result);
+  }
 
   Future<void> _loadTasks() async {
     try {
@@ -567,6 +651,76 @@ class _AppShellState extends State<AppShell> {
       'groceries',
       jsonEncode(_groceries.map((item) => item.toJson()).toList()),
     );
+  }
+
+  Future<void> _loadMonthlyItems() async {
+    final preferences = await SharedPreferences.getInstance();
+    final encoded = preferences.getString('monthly_items');
+    if (encoded == null) return;
+    try {
+      final decoded = jsonDecode(encoded) as List<dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _monthlyItems
+          ..clear()
+          ..addAll(decoded.map(
+              (item) => MonthlyItem.fromJson(item as Map<String, dynamic>)));
+      });
+    } catch (_) {
+      await preferences.remove('monthly_items');
+    }
+  }
+
+  Future<void> _saveMonthlyItems() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+      'monthly_items',
+      jsonEncode(_monthlyItems.map((item) => item.toJson()).toList()),
+    );
+  }
+
+  Future<void> _editGrocery(GroceryItem item) async {
+    final updated = await showDialog<GroceryItem>(
+      context: context,
+      builder: (context) => _GroceryEditorDialog(initial: item),
+    );
+    if (updated == null || !mounted) return;
+    final index = _groceries.indexOf(item);
+    if (index == -1) return;
+    setState(() => _groceries[index] = updated);
+    await _saveGroceries();
+  }
+
+  Future<void> _deleteGrocery(GroceryItem item) async {
+    setState(() => _groceries.remove(item));
+    await _saveGroceries();
+  }
+
+  Future<void> _addMonthlyItem() async {
+    final item = await showDialog<MonthlyItem>(
+      context: context,
+      builder: (context) => const _MonthlyItemDialog(),
+    );
+    if (item == null || !mounted) return;
+    setState(() => _monthlyItems.add(item));
+    await _saveMonthlyItems();
+  }
+
+  Future<void> _editMonthlyItem(MonthlyItem item) async {
+    final updated = await showDialog<MonthlyItem>(
+      context: context,
+      builder: (context) => _MonthlyItemDialog(initial: item),
+    );
+    if (updated == null || !mounted) return;
+    final index = _monthlyItems.indexOf(item);
+    if (index == -1) return;
+    setState(() => _monthlyItems[index] = updated);
+    await _saveMonthlyItems();
+  }
+
+  Future<void> _deleteMonthlyItem(MonthlyItem item) async {
+    setState(() => _monthlyItems.remove(item));
+    await _saveMonthlyItems();
   }
 
   Future<void> _loadProfile() async {
@@ -1019,8 +1173,11 @@ class _AppShellState extends State<AppShell> {
         challengeTitle: _selectedChallenge.title,
         challengeSubtitle: _selectedChallenge.subtitle,
         challengeStartDate: _selectedChallenge.startDate,
+        movementSteps: _movementSteps,
+        onEditMovement: _editMovement,
         onSeeAllTasks: () => setState(() => _selectedIndex = 1),
         onOpenChallenges: () => setState(() => _selectedIndex = 4),
+        onOpenProfile: () => setState(() => _selectedIndex = 5),
         onMealPlan: _showMealPlan,
         onNotifications: _showNotifications,
       ),
@@ -1042,6 +1199,11 @@ class _AppShellState extends State<AppShell> {
         sortLabel: _grocerySort,
         onMealPlan: _showMealPlan,
         onManagePantry: _showPantryDetails,
+        onEdit: _editGrocery,
+        onDelete: _deleteGrocery,
+        onAddMonthly: _addMonthlyItem,
+        onEditMonthly: _editMonthlyItem,
+        onDeleteMonthly: _deleteMonthlyItem,
         currencySymbol: _currencySymbol,
       ),
       _WorkoutPage(),
@@ -1087,7 +1249,15 @@ class _AppShellState extends State<AppShell> {
               child: Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 760),
-                  child: pages[_selectedIndex],
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 280),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    child: KeyedSubtree(
+                      key: ValueKey(_selectedIndex),
+                      child: pages[_selectedIndex],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1099,6 +1269,8 @@ class _AppShellState extends State<AppShell> {
         onDestinationSelected: (index) {
           if (index == 3) {
             _openMoreMenu();
+          } else if (index == 2) {
+            setState(() => _selectedIndex = 3);
           } else {
             setState(() => _selectedIndex = index);
           }
@@ -1145,8 +1317,11 @@ class _DashboardPage extends StatelessWidget {
     required this.challengeTitle,
     required this.challengeSubtitle,
     required this.challengeStartDate,
+    required this.movementSteps,
+    required this.onEditMovement,
     required this.onSeeAllTasks,
     required this.onOpenChallenges,
+    required this.onOpenProfile,
     required this.onMealPlan,
     required this.onNotifications,
   });
@@ -1164,8 +1339,11 @@ class _DashboardPage extends StatelessWidget {
   final String challengeTitle;
   final String challengeSubtitle;
   final DateTime challengeStartDate;
+  final int movementSteps;
+  final VoidCallback onEditMovement;
   final VoidCallback onSeeAllTasks;
   final VoidCallback onOpenChallenges;
+  final VoidCallback onOpenProfile;
   final VoidCallback onMealPlan;
   final VoidCallback onNotifications;
 
@@ -1176,35 +1354,21 @@ class _DashboardPage extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(22, 26, 22, 28),
         children: [
-          _TopGreeting(onNotifications: onNotifications),
+          _TopGreeting(
+              onNotifications: onNotifications, onProfile: onOpenProfile),
           const SizedBox(height: 22),
           _FocusCard(
               progress: progress,
               completed: completedTasks,
               total: tasks.length),
           const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.water_drop_rounded,
-                  color: const Color(0xFF42A5F5),
-                  title: 'Water',
-                  value: '2.0 / 3.0 L',
-                  subtitle: 'Good start',
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.directions_run_rounded,
-                  color: const Color(0xFFEF8D59),
-                  title: 'Movement',
-                  value: '4,820 steps',
-                  subtitle: '8,000 goal',
-                ),
-              ),
-            ],
+          _MetricCard(
+            icon: Icons.directions_run_rounded,
+            color: const Color(0xFFEF8D59),
+            title: 'Movement today',
+            value: '${movementSteps.toString()} steps',
+            subtitle: 'Tap to update your progress',
+            onTap: onEditMovement,
           ),
           const SizedBox(height: 24),
           _SectionTitle(
@@ -1280,7 +1444,7 @@ class _TasksPage extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(22, 26, 22, 28),
         children: [
           _PageHeader(
-            eyebrow: 'TUESDAY, OCTOBER 28',
+            eyebrow: _dayLabel(DateTime.now()),
             title: 'Today',
             subtitle:
                 '${tasks.where((task) => !task.done).length} things to focus on',
@@ -1331,6 +1495,11 @@ class _GroceriesPage extends StatelessWidget {
     required this.sortLabel,
     required this.onMealPlan,
     required this.onManagePantry,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onAddMonthly,
+    required this.onEditMonthly,
+    required this.onDeleteMonthly,
     required this.currencySymbol,
   });
 
@@ -1342,6 +1511,11 @@ class _GroceriesPage extends StatelessWidget {
   final String sortLabel;
   final VoidCallback onMealPlan;
   final VoidCallback onManagePantry;
+  final ValueChanged<GroceryItem> onEdit;
+  final ValueChanged<GroceryItem> onDelete;
+  final VoidCallback onAddMonthly;
+  final ValueChanged<MonthlyItem> onEditMonthly;
+  final ValueChanged<MonthlyItem> onDeleteMonthly;
   final String currencySymbol;
 
   @override
@@ -1409,14 +1583,16 @@ class _GroceriesPage extends StatelessWidget {
               child: _GroceryRow(
                   item: item,
                   onToggle: () => onToggle(item),
+                  onEdit: () => onEdit(item),
+                  onDelete: () => onDelete(item),
                   currencySymbol: currencySymbol),
             ),
           ),
           const SizedBox(height: 20),
           _SectionTitle(
               title: 'Monthly purchases',
-              action: 'Manage',
-              onAction: onManagePantry),
+              action: 'Add',
+              onAction: onAddMonthly),
           const SizedBox(height: 10),
           Container(
             padding: const EdgeInsets.all(15),
@@ -1432,9 +1608,20 @@ class _GroceriesPage extends StatelessWidget {
                               size: 18, color: Color(0xFF8A91A4)),
                           const SizedBox(width: 10),
                           Expanded(
-                            child: Text(item.name,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w700)),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(item.name,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700)),
+                                const SizedBox(height: 3),
+                                Text(
+                                    '${item.category} · quantity ${item.quantity.toStringAsFixed(item.quantity == item.quantity.roundToDouble() ? 0 : 1)}',
+                                    style: const TextStyle(
+                                        color: Color(0xFF9CA2B1),
+                                        fontSize: 11)),
+                              ],
+                            ),
                           ),
                           Text(
                             item.daysUntilDue == 1
@@ -1447,6 +1634,17 @@ class _GroceriesPage extends StatelessWidget {
                               fontSize: 12,
                               fontWeight: FontWeight.w700,
                             ),
+                          ),
+                          IconButton(
+                            onPressed: () => onEditMonthly(item),
+                            icon: const Icon(Icons.edit_outlined, size: 18),
+                            tooltip: 'Edit purchase',
+                          ),
+                          IconButton(
+                            onPressed: () => onDeleteMonthly(item),
+                            icon: const Icon(Icons.delete_outline_rounded,
+                                size: 18),
+                            tooltip: 'Delete purchase',
                           ),
                         ],
                       ),
@@ -2513,20 +2711,21 @@ class _PageScaffold extends StatelessWidget {
 }
 
 class _TopGreeting extends StatelessWidget {
-  const _TopGreeting({required this.onNotifications});
+  const _TopGreeting({required this.onNotifications, required this.onProfile});
 
   final VoidCallback onNotifications;
+  final VoidCallback onProfile;
 
   @override
   Widget build(BuildContext context) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Expanded(
+        Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('TUESDAY, OCTOBER 28',
+              Text(_dayLabel(DateTime.now()),
                   style: TextStyle(
                       color: Color(0xFF858C9F),
                       fontSize: 11,
@@ -2545,10 +2744,21 @@ class _TopGreeting extends StatelessWidget {
             ],
           ),
         ),
-        IconButton.filledTonal(
-          onPressed: onNotifications,
-          tooltip: 'Enable notifications',
-          icon: const Icon(Icons.notifications_none_rounded),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton.filledTonal(
+              onPressed: onProfile,
+              tooltip: 'Edit profile',
+              icon: const Icon(Icons.person_outline_rounded),
+            ),
+            const SizedBox(width: 6),
+            IconButton.filledTonal(
+              onPressed: onNotifications,
+              tooltip: 'Enable notifications',
+              icon: const Icon(Icons.notifications_none_rounded),
+            ),
+          ],
         ),
       ],
     );
@@ -2700,17 +2910,19 @@ class _MetricCard extends StatelessWidget {
       required this.color,
       required this.title,
       required this.value,
-      required this.subtitle});
+      required this.subtitle,
+      this.onTap});
 
   final IconData icon;
   final Color color;
   final String title;
   final String value;
   final String subtitle;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final card = Container(
       padding: const EdgeInsets.all(15),
       decoration: _cardDecoration(),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -2731,6 +2943,15 @@ class _MetricCard extends StatelessWidget {
         Text(subtitle,
             style: const TextStyle(color: Color(0xFF9BA1B0), fontSize: 11)),
       ]),
+    );
+    if (onTap == null) return card;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(17),
+        child: card,
+      ),
     );
   }
 }
@@ -3062,19 +3283,34 @@ class _PantryAlert extends StatelessWidget {
 }
 
 class _GroceryEditorDialog extends StatefulWidget {
-  const _GroceryEditorDialog();
+  const _GroceryEditorDialog({this.initial});
+
+  final GroceryItem? initial;
 
   @override
   State<_GroceryEditorDialog> createState() => _GroceryEditorDialogState();
 }
 
 class _GroceryEditorDialogState extends State<_GroceryEditorDialog> {
-  final _name = TextEditingController();
-  final _category = TextEditingController(text: 'Other');
-  final _quantity = TextEditingController(text: '1');
-  final _minimum = TextEditingController(text: '1');
-  final _price = TextEditingController(text: '0');
-  final _expiryDays = TextEditingController(text: '7');
+  late final TextEditingController _name;
+  late final TextEditingController _category;
+  late final TextEditingController _quantity;
+  late final TextEditingController _minimum;
+  late final TextEditingController _price;
+  late final TextEditingController _expiryDays;
+
+  @override
+  void initState() {
+    super.initState();
+    final item = widget.initial;
+    _name = TextEditingController(text: item?.name ?? '');
+    _category = TextEditingController(text: item?.category ?? 'Other');
+    _quantity = TextEditingController(text: '${item?.quantity ?? 1}');
+    _minimum = TextEditingController(text: '${item?.minimumQuantity ?? 1}');
+    _price = TextEditingController(text: '${item?.price ?? 0}');
+    _expiryDays = TextEditingController(
+        text: '${item?.expiresAt.difference(DateTime.now()).inDays ?? 7}');
+  }
 
   @override
   void dispose() {
@@ -3100,11 +3336,11 @@ class _GroceryEditorDialogState extends State<_GroceryEditorDialog> {
       GroceryItem(
         name,
         _category.text.trim().isEmpty ? 'Other' : _category.text.trim(),
-        bought: true,
+        bought: widget.initial?.bought ?? false,
         quantity: double.tryParse(_quantity.text) ?? 1,
         minimumQuantity: double.tryParse(_minimum.text) ?? 1,
         price: double.tryParse(_price.text) ?? 0,
-        purchasedAt: now,
+        purchasedAt: widget.initial?.purchasedAt ?? now,
         expiresAt: now.add(Duration(days: int.tryParse(_expiryDays.text) ?? 7)),
       ),
     );
@@ -3113,16 +3349,32 @@ class _GroceryEditorDialogState extends State<_GroceryEditorDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Add pantry item'),
+      title: Text(
+          widget.initial == null ? 'Add grocery item' : 'Edit grocery item'),
       content: SingleChildScrollView(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           TextField(
               controller: _name,
               autofocus: true,
               decoration: const InputDecoration(labelText: 'Item name')),
+          DropdownButtonFormField<String>(
+            value: const ['Protein', 'Pantry', 'Vegetables', 'Dairy', 'Other']
+                    .contains(_category.text)
+                ? _category.text
+                : 'Other',
+            decoration: const InputDecoration(labelText: 'Category suggestion'),
+            items: const ['Protein', 'Pantry', 'Vegetables', 'Dairy', 'Other']
+                .map((category) =>
+                    DropdownMenuItem(value: category, child: Text(category)))
+                .toList(),
+            onChanged: (value) {
+              if (value != null) setState(() => _category.text = value);
+            },
+          ),
           TextField(
               controller: _category,
-              decoration: const InputDecoration(labelText: 'Category')),
+              decoration: const InputDecoration(
+                  labelText: 'Category (or type your own)')),
           Row(children: [
             Expanded(
                 child: TextField(
@@ -3158,7 +3410,9 @@ class _GroceryEditorDialogState extends State<_GroceryEditorDialog> {
         TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Cancel')),
-        FilledButton(onPressed: _save, child: const Text('Add')),
+        FilledButton(
+            onPressed: _save,
+            child: Text(widget.initial == null ? 'Add' : 'Save')),
       ],
     );
   }
@@ -3168,10 +3422,14 @@ class _GroceryRow extends StatelessWidget {
   const _GroceryRow(
       {required this.item,
       required this.onToggle,
+      required this.onEdit,
+      required this.onDelete,
       required this.currencySymbol});
 
   final GroceryItem item;
   final VoidCallback onToggle;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
   final String currencySymbol;
 
   @override
@@ -3217,14 +3475,145 @@ class _GroceryRow extends StatelessWidget {
                     fontSize: 11)),
           ],
         )),
-        Text('$currencySymbol ${item.price.toStringAsFixed(2)}',
-            style: const TextStyle(
-                color: Color(0xFF5367F5),
-                fontSize: 11,
-                fontWeight: FontWeight.w700)),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text('$currencySymbol ${item.price.toStringAsFixed(2)}',
+                style: const TextStyle(
+                    color: Color(0xFF5367F5),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700)),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                    onPressed: onEdit,
+                    icon: const Icon(Icons.edit_outlined, size: 17),
+                    tooltip: 'Edit grocery'),
+                IconButton(
+                    onPressed: onDelete,
+                    icon: const Icon(Icons.delete_outline_rounded, size: 17),
+                    tooltip: 'Delete grocery'),
+              ],
+            ),
+          ],
+        ),
       ]),
     );
   }
+}
+
+class _MonthlyItemDialog extends StatefulWidget {
+  const _MonthlyItemDialog({this.initial});
+
+  final MonthlyItem? initial;
+
+  @override
+  State<_MonthlyItemDialog> createState() => _MonthlyItemDialogState();
+}
+
+class _MonthlyItemDialogState extends State<_MonthlyItemDialog> {
+  late final TextEditingController _name;
+  late final TextEditingController _category;
+  late final TextEditingController _quantity;
+  late final TextEditingController _price;
+  late final TextEditingController _due;
+
+  @override
+  void initState() {
+    super.initState();
+    final item = widget.initial;
+    _name = TextEditingController(text: item?.name ?? '');
+    _category = TextEditingController(text: item?.category ?? 'Other');
+    _quantity = TextEditingController(text: '${item?.quantity ?? 1}');
+    _price = TextEditingController(text: '${item?.price ?? 0}');
+    _due = TextEditingController(text: '${item?.daysUntilDue ?? 30}');
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _category.dispose();
+    _quantity.dispose();
+    _price.dispose();
+    _due.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (_name.text.trim().isEmpty) return;
+    Navigator.pop(
+      context,
+      MonthlyItem(
+        _name.text.trim(),
+        _category.text.trim().isEmpty ? 'Other' : _category.text.trim(),
+        int.tryParse(_due.text) ?? 30,
+        quantity: double.tryParse(_quantity.text) ?? 1,
+        price: double.tryParse(_price.text) ?? 0,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(widget.initial == null
+            ? 'Add monthly purchase'
+            : 'Edit monthly purchase'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+                controller: _name,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Item name')),
+            DropdownButtonFormField<String>(
+              value: const ['Household', 'Personal', 'Health', 'Other']
+                      .contains(_category.text)
+                  ? _category.text
+                  : 'Other',
+              decoration:
+                  const InputDecoration(labelText: 'Category suggestion'),
+              items: const ['Household', 'Personal', 'Health', 'Other']
+                  .map((category) =>
+                      DropdownMenuItem(value: category, child: Text(category)))
+                  .toList(),
+              onChanged: (value) {
+                if (value != null) setState(() => _category.text = value);
+              },
+            ),
+            TextField(
+                controller: _category,
+                decoration: const InputDecoration(
+                    labelText: 'Category (or type your own)')),
+            Row(children: [
+              Expanded(
+                  child: TextField(
+                      controller: _quantity,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration:
+                          const InputDecoration(labelText: 'Quantity'))),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: TextField(
+                      controller: _price,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'Price'))),
+            ]),
+            TextField(
+                controller: _due,
+                keyboardType: TextInputType.number,
+                decoration:
+                    const InputDecoration(labelText: 'Due again in days')),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(onPressed: _save, child: const Text('Save')),
+        ],
+      );
 }
 
 class _CoachCard extends StatelessWidget {
@@ -3633,6 +4022,41 @@ class _InputDialog extends StatelessWidget {
       ],
     );
   }
+}
+
+class _NumberInputDialog extends StatelessWidget {
+  const _NumberInputDialog({
+    required this.title,
+    required this.label,
+    required this.controller,
+  });
+
+  final String title;
+  final String label;
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(labelText: label),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () {
+              final value = int.tryParse(controller.text.trim());
+              if (value != null && value >= 0) Navigator.pop(context, value);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      );
 }
 
 class _ChallengeDialog extends StatefulWidget {
